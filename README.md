@@ -45,6 +45,9 @@ required hardware
 - any ESP32 for the UART variant
 - for the ethernet variant, a board with a PHY: the LAN8720 ones over the internal EMAC, or an SPI W5500
 
+![alt text](images/esp32-eth01.jpg "esp32-eth01, LAN8720 over the internal EMAC")
+![alt text](images/esp32-s3-eth.jpg "esp32-s3-eth, W5500 over SPI")
+
 build environment
 -----------------
 
