@@ -30,6 +30,8 @@
 #include "esp_timer.h"
 #include "esp_mac.h"
 #include "esp_random.h"
+#include "esp_system.h"                   /* esp_restart, esp_reset_reason: needed by every build now */
+#include "esp_attr.h"
 #include "nvs_flash.h"
 #include "driver/uart.h"
 
@@ -72,6 +74,14 @@
 #ifndef SNIFF_NTP
 #define SNIFF_NTP       "pool.ntp.org"
 #endif
+/*
+ * how often SNTP corrects the clock. the default hour let sniffers drift up to ~100 ms apart
+ * between corrections (measured 2026-09-29, ~28 ppm between two boards) and then step, which
+ * showed as wrong ordering in espnow-live's TIME column and made timing across collectors
+ * useless at the scale of a reply, 8..100 ms. a minute keeps them within ~2 ms. point
+ * SNIFF_NTP at a LAN server for this - a public pool is not for one query a minute per board
+ */
+#define SNIFF_NTP_SYNC_MS   (60 * 1000)
 
 #ifdef SNIFF_CHANNEL
 #undef  CHANNEL
@@ -98,6 +108,14 @@ static volatile _u32 n_seen, n_dropped, n_offline;
 static volatile _u32 n_otaskip;         /* update checks skipped for want of a collector */
 static volatile int  ota_kick;          /* a collector arrived: bring the next check forward */
 static _u32 n_stale;                    /* backlog frames thrown away on (re)connect */
+static volatile _u32 n_mgmt;            /* every management frame the radio handed over */
+static _u32 n_rearm;                    /* times the watchdog re-armed the radio */
+/*
+ * watchdog restarts since power-on. RTC noinit memory survives esp_restart() but not a power
+ * cycle, after which it holds garbage - hence the magic
+ */
+static RTC_NOINIT_ATTR _u32 wd_magic, wd_restarts;
+#define WD_MAGIC        0x5eed0a7cUL
 
 /* buildit stamps the running build into build_id.h; a hand build has none */
 #if defined(SERNO)
@@ -137,6 +155,12 @@ sniff_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 
     if (type != WIFI_PKT_MGMT)
         return;
+    /*
+     * counted before the ESP-NOW test on purpose. beacons arrive all the time, so this only
+     * stands still if the radio has stopped delivering anything - where rx standing still
+     * can also just mean that nobody nearby is speaking ESP-NOW
+     */
+    n_mgmt++;
 
     f   = p->payload;
     len = (int)p->rx_ctrl.sig_len - 4;      /* sig_len counts the FCS, we do not want it */
@@ -224,12 +248,14 @@ eth_up(void)
 
     esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, SNIFF_NTP);
+    esp_sntp_set_sync_interval(SNIFF_NTP_SYNC_MS);     /* before init: it applies from the start */
     esp_sntp_init();
 }
 
 /*
- * SNTP only has to get close. overlapping collectors are aligned exactly afterwards by
- * cross correlating the frames they both heard, which beats any clock protocol here
+ * every frame is stamped at reception with uptime plus this offset, which follows the
+ * SNTP-corrected clock every 10 s. between collectors the result agrees to a few ms; to
+ * the frame, overlapping collectors are aligned by the frames they both heard
  */
 static void
 clock_sync(void)
@@ -501,8 +527,11 @@ emit_stats(void)
 {
     _u8 me[6] = { 0x02, 0, 0, 0, 0, 0xff };
     _u8 mac[6];
-    _u8 f[224];                         /* 39 bytes of framing, then txt */
-    char txt[128];                      /* must not truncate: the counters are the point */
+    _u8 f[256];                         /* 39 bytes of framing, then txt */
+    char txt[192];                      /* must not truncate: the counters are the point */
+    wifi_second_chan_t sc;
+    _u8 ch = 0;
+    bool prom = false;
     chdr_t h;
     int n = 0, plen;
 
@@ -510,13 +539,21 @@ emit_stats(void)
     if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK) {
         me[3] = mac[3]; me[4] = mac[4]; me[5] = mac[5];
     }
+    /*
+     * the live radio state, not what was configured: a sniffer that went deaf with every other
+     * part still running is why these are here
+     */
+    esp_wifi_get_channel(&ch, &sc);
+    esp_wifi_get_promiscuous(&prom);
     plen = snprintf(txt, _SZ(txt),
                     "sniffer %02x:%02x:%02x fw=%s rx=%lu dropped=%lu stale=%lu offline=%lu"
-                    " otaskip=%lu",
+                    " otaskip=%lu ch=%u prom=%d mgmt=%lu rearm=%lu wdrst=%lu",
                     me[3], me[4], me[5], SNIFF_FW,
                     (unsigned long)n_seen, (unsigned long)n_dropped,
                     (unsigned long)n_stale, (unsigned long)n_offline,
-                    (unsigned long)n_otaskip) + 1;
+                    (unsigned long)n_otaskip, (unsigned)ch, (int)prom,
+                    (unsigned long)n_mgmt, (unsigned long)n_rearm,
+                    (unsigned long)wd_restarts) + 1;
 
     f[n++] = 0xd0; f[n++] = 0x00;                   /* action */
     f[n++] = 0x00; f[n++] = 0x00;                   /* duration */
@@ -535,6 +572,67 @@ emit_stats(void)
     h.us = esp_timer_get_time();
     h.rssi = 0; h.channel = CHANNEL; h.rate = 2; h.len = n;
     pcap_frame(&h, f);
+}
+
+/*
+ * put the radio (back) into the state capture needs. used at boot and by the watchdog, so the
+ * two can never drift apart
+ */
+static esp_err_t
+radio_arm(void)
+{
+    wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
+    esp_err_t r;
+
+    esp_wifi_set_promiscuous(false);
+    if ((r = esp_wifi_set_channel(CHANNEL, WIFI_SECOND_CHAN_NONE)) != ESP_OK ||
+        (r = esp_wifi_set_promiscuous_filter(&filt)) != ESP_OK ||
+        (r = esp_wifi_set_promiscuous_rx_cb(sniff_cb)) != ESP_OK)
+        return r;
+    return esp_wifi_set_promiscuous(true);
+}
+
+#define WD_REARM_S      60              /* no management frame this long: re-arm the radio */
+#define WD_RESTART_S    300             /* ... and still none this long: restart */
+
+/*
+ * the 2026-09-28 soak found two sniffers deaf for good - rx frozen, while their network, timers
+ * and health frames all carried on, and nothing ever recovered. so watch the radio itself.
+ * a channel or promiscuous flag that is not what capture needs is fixed straight away. a radio
+ * that has delivered management frames before and now delivers none is re-armed every minute,
+ * and restarted if that has not helped within five. judging by management frames rather than
+ * ESP-NOW ones is what keeps a sniffer in a quiet spot from being taken for a dead one, and
+ * requiring them to have been seen first keeps a spot with no beacons at all from looping.
+ * runs after emit_stats, so the health frame records the broken state before it is repaired
+ */
+static void
+radio_watchdog(void)
+{
+    static _u32 last;
+    static int heard, quiet;
+    wifi_second_chan_t sc;
+    _u8 ch = 0;
+    bool prom = false;
+    _u32 m = n_mgmt;
+
+    if (m != last) {
+        last  = m;
+        heard = 1;
+        quiet = 0;
+    } else if (heard)
+        quiet += STATS_PERIOD_US / 1000000;
+
+    esp_wifi_get_channel(&ch, &sc);
+    esp_wifi_get_promiscuous(&prom);
+
+    if (ch != CHANNEL || !prom || (quiet && quiet % WD_REARM_S == 0)) {
+        radio_arm();
+        n_rearm++;
+    }
+    if (quiet >= WD_RESTART_S) {
+        wd_restarts++;
+        esp_restart();
+    }
 }
 
 #if defined(SNIFF_COLLECTOR)
@@ -600,6 +698,7 @@ writer_task(void *arg)
 #endif
             pcap_header();          /* repeated, so a reader may join mid stream */
             emit_stats();
+            radio_watchdog();               /* after the report, so it shows what was wrong */
 #if defined(SNIFF_COLLECTOR) && defined(SNIFF_OTA_URL)
             ota_mark_valid();               /* reaching the collector proves this image */
 #endif
@@ -665,7 +764,11 @@ app_main(void)
     };
 #endif
     wifi_init_config_t wc = WIFI_INIT_CONFIG_DEFAULT();
-    wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
+
+    if (wd_magic != WD_MAGIC || esp_reset_reason() == ESP_RST_POWERON) {
+        wd_magic    = WD_MAGIC;
+        wd_restarts = 0;
+    }
 
 #if defined(SNIFF_COLLECTOR)
     nvs_init();
@@ -695,7 +798,5 @@ app_main(void)
     xTaskCreate(time_task,   "time",   2560, 0, 3, 0);
 #endif
 
-    ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filt));
-    ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(sniff_cb));
-    ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
+    ESP_ERROR_CHECK(radio_arm());
 }

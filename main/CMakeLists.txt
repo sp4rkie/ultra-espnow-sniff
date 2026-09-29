@@ -24,3 +24,8 @@ if(DEFINED ENV{SNIFF_OTA_URL})
     target_compile_definitions(${COMPONENT_LIB} PRIVATE SNIFF_OTA_URL="$ENV{SNIFF_OTA_URL}")
     message("SNIFF_OTA_URL is set          (OTA over ethernet enabled)")
 endif()
+
+if(DEFINED ENV{SNIFF_NTP} AND NOT "$ENV{SNIFF_NTP}" STREQUAL "")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE SNIFF_NTP="$ENV{SNIFF_NTP}")
+    message("SNIFF_NTP=$ENV{SNIFF_NTP}")
+endif()
