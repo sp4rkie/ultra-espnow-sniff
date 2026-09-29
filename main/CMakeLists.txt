@@ -15,6 +15,14 @@ message("-------------------------------------------------------------^^^-------
 #
 #   export SNIFF_COLLECTOR=a.b.c.d      (see buildit.cfg)
 #
+# the environment is read only when cmake configures, and nothing tells cmake that it changed:
+# a new address in buildit.cfg went on compiling the old one into every image, which then dialled
+# it after the OTA. so re-configure whenever a file these values come from changes
+#
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/buildit.cfg")
+if(EXISTS "${CMAKE_SOURCE_DIR}/../mcfg_local.h")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/../mcfg_local.h")
+endif()
 if(DEFINED ENV{SNIFF_COLLECTOR})
     target_compile_definitions(${COMPONENT_LIB} PRIVATE SNIFF_COLLECTOR="$ENV{SNIFF_COLLECTOR}")
     message("SNIFF_COLLECTOR=$ENV{SNIFF_COLLECTOR}  (ethernet/TCP transport)")

@@ -64,7 +64,7 @@
  * and the unit brings up ethernet instead and streams the same pcap to that collector,
  * which is what a permanently placed unit wants:
  *
- *   OPTS_='-DSNIFF_COLLECTOR=\"192.168.0.12\"' idf.py build
+ *   OPTS_='-DSNIFF_COLLECTOR=\"192.168.0.13\"' idf.py build
  *
  * no address is baked in here on purpose - this file carries no site data.
  */
