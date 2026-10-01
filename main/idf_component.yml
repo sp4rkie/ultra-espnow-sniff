@@ -1,0 +1,5 @@
+# written by exportit from the IDF_COMPONENT entries in buildit.cfg - what the per-device
+# builds pull in, so that a plain idf.py build finds it too
+dependencies:
+  ethernet_init:
+    path: ${IDF_PATH}/examples/ethernet/basic/components/ethernet_init

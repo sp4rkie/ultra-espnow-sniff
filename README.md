@@ -52,7 +52,10 @@ build environment
 -----------------
 
 - [ESP-IDF](https://github.com/espressif/esp-idf) v5.5 or later, and `$IDF_PATH` set
-- the ethernet variant pulls in the `ethernet_init` component shipped with the IDF ethernet examples
+- CMake 4.0 or later: `CMakeLists.txt` asks for it, but ESP-IDF itself needs only 3.16, so the
+  CMake it installs (3.30 with v5.5) or your system's may well be older - check `cmake --version`
+- the ethernet variant pulls in the `ethernet_init` component shipped with the IDF ethernet examples,
+  see `main/idf_component.yml`
 
 how to build
 ------------
