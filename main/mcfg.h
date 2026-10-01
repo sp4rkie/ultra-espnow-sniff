@@ -32,11 +32,9 @@
 #define ESPNOW_PASSWORD_STR         _w1("pass_accesspoint10")
 #if defined(ESPNOW_TARGET) || defined(ESPNOW_INITIATOR)
 #define ESPNOW_UFIRE_CHANNEL        1
-#define ESPNOW_ROTA2G_CHANNEL       1
-#define ESPNOW_ROTA2K_CHANNEL       6
-#define ESPNOW_ROTA2I_CHANNEL       11
+#define ESPNOW_TOH_CHANNEL          6
 #if !defined(ESPNOW_CHANNEL)
-#define ESPNOW_CHANNEL              ESPNOW_ROTA2K_CHANNEL
+#define ESPNOW_CHANNEL              ESPNOW_TOH_CHANNEL
 #endif
 #define ESPNOW_USY_GW_MAC           { 0xaa, 0xbb, 0xcc, 0x00, 0x00, 0x01 }
 #define ESPNOW_TOH_GW_MAC           { 0xaa, 0xbb, 0xcc, 0x00, 0x00, 0x02 }
