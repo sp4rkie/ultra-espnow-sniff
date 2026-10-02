@@ -65,13 +65,21 @@ pcap over the UART at 921600:
     idf.py set-target esp32
     idf.py build flash monitor
 
-pcap over ethernet to a collector:
+pcap over ethernet to a collector, whose address `main/CMakeLists.txt` takes from the environment:
 
-    OPTS_='-DSNIFF_COLLECTOR="192.168.0.11"' idf.py build flash
+    export SNIFF_COLLECTOR=192.168.0.11
+    idf.py set-target esp32
+    idf.py build flash
 
-the channel defaults to 6 and is a define like the rest:
+the channel defaults to 6, any other is a define passed in `OPTS_`:
 
-    OPTS_='-DSNIFF_COLLECTOR="192.168.0.11" -DSNIFF_CHANNEL=11' idf.py build
+    export OPTS_=-DSNIFF_CHANNEL=11
+    idf.py set-target esp32
+    idf.py build
+
+both are read only when cmake configures the build, which `idf.py set-target` does, so set them
+first. to build with other values later, run `idf.py fullclean` before the build: nothing tells
+cmake that the environment changed, and the old values would be compiled in again silently.
 
 `main/mcfg.h` as shipped is a template. real values belong in an `mcfg_local.h` beside it, pulled in by `MCFG_LOCAL`, so nothing private need ever be committed.
 
